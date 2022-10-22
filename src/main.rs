@@ -1,74 +1,89 @@
-use fyrox::core::parking_lot::Mutex;
-use fyrox::{
-    core::pool::Handle,
-    engine::{resource_manager::ResourceManager, Engine, EngineInitParams, SerializationContext},
-    event::{Event, WindowEvent},
-    event_loop::{ControlFlow, EventLoop},
-    gui::{
-        button::{ButtonBuilder, ButtonMessage},
-        grid::{Column, GridBuilder, Row},
-        message::{MessageDirection, UiMessage},
-        ttf::{Font, SharedFont},
-        widget::{WidgetBuilder, WidgetMessage},
-        window::{WindowBuilder, WindowMessage, WindowTitle},
-        Thickness, UiNode, UserInterface,
-    },
-};
-use std::{
-    path::Path,
-    sync::{mpsc::Sender, Arc, RwLock},
-};
+use slint::{FilterModel, Model};
+use std::rc::Rc;
 
-fn main() {
-    let events_loop = EventLoop::<()>::new();
+slint::include_modules!();
 
-    let primary_monitor = events_loop.primary_monitor().unwrap();
+pub fn main() {
 
-    let mut monitor_dimensions = primary_monitor.size();
-    monitor_dimensions.height = (monitor_dimensions.height as f32 * 0.7) as u32;
-    monitor_dimensions.width = (monitor_dimensions.width as f32 * 0.7) as u32;
+    let todo_model = Rc::new(slint::VecModel::<TodoItem>::from(vec![
+        TodoItem { checked: true, title: "Implement the .slint file".into() },
+        TodoItem { checked: true, title: "Do the Rust part".into() },
+        TodoItem { checked: false, title: "Make the C++ code".into() },
+        TodoItem { checked: false, title: "Write some JavaScript code".into() },
+        TodoItem { checked: false, title: "Test the application".into() },
+        // TodoItem { checked: false, title: "Ship to customer".into() },
+        // TodoItem { checked: false, title: "???".into() },
+        // TodoItem { checked: false, title: "Profit".into() },
+    ]));
 
-    let inner_size = monitor_dimensions.to_logical::<f32>(primary_monitor.scale_factor());
+    let main_window = MainWindow::new();
 
-    let window_builder = fyrox::window::WindowBuilder::new()
-        .with_title("Mil Std 1553B Sim")
-        .with_inner_size(inner_size)
-        .with_resizable(true);
+    main_window.on_todo_added({
+        let todo_model = todo_model.clone();
+        move |text| todo_model.push(TodoItem { checked: false, title: text })
+    });
 
-    let serialization_context = Arc::new(SerializationContext::new());
-
-    let mut engine = Engine::new(EngineInitParams {
-        window_builder,
-        resource_manager: ResourceManager::new(serialization_context.clone()),
-        serialization_context,
-        events_loop: &events_loop,
-        vsync: false,
-    })
-    .unwrap();
-
-    events_loop.run(move |event, _, control_flow| {
-        // game.process_input_event(&event);
-
-        match event {
-            Event::MainEventsCleared => {
-                engine.get_window().request_redraw();
-            },
-            Event::RedrawRequested(_) => {
-                engine.render().unwrap();
-            },
-            Event::WindowEvent { event, .. } => match event {
-                WindowEvent::CloseRequested => {
-                    *control_flow = ControlFlow::Exit
-                },
-                WindowEvent::Resized(new_size) => {
-                    engine.set_frame_size(new_size.into()).unwrap();
-                },
-                _ => (),
-            },
-            Event::LoopDestroyed => {
-
-            },
-            _ => *control_flow = ControlFlow::Poll,
+    main_window.on_remove_done({
+        let todo_model = todo_model.clone();
+        move || {
+            let mut offset = 0;
+            for i in 0..todo_model.row_count() {
+                if todo_model.row_data(i - offset).unwrap().checked {
+                    todo_model.remove(i - offset);
+                    offset += 1;
+                }
+            }
         }
     });
+
+    let weak_window = main_window.as_weak();
+    main_window.on_popup_confirmed(move || {
+        let window = weak_window.unwrap();
+        window.hide();
+    });
+
+    {
+        let weak_window = main_window.as_weak();
+        let todo_model = todo_model.clone();
+        main_window.window().on_close_requested(move || {
+            let window = weak_window.unwrap();
+
+            if todo_model.iter().any(|t| !t.checked) {
+                window.invoke_show_confirm_popup();
+                slint::CloseRequestResponse::KeepWindowShown
+            } else {
+                slint::CloseRequestResponse::HideWindow
+            }
+        });
+    }
+
+    main_window.on_apply_sorting_and_filtering({
+        let weak_window = main_window.as_weak();
+        let todo_model = todo_model.clone();
+
+        move || {
+            let window = weak_window.unwrap();
+            window.set_todo_model(todo_model.clone().into());
+
+            if window.get_hide_done_items() {
+                window.set_todo_model(
+                    Rc::new(FilterModel::new(window.get_todo_model(), |e| !e.checked)).into(),
+                );
+            }
+
+            if window.get_is_sort_by_name() {
+                // window.set_todo_model(
+                //     Rc::new(SortModel::new(window.get_todo_model(), |lhs, rhs| {
+                //         lhs.title.to_lowercase().cmp(&rhs.title.to_lowercase())
+                //     }))
+                //     .into(),
+                // );
+            }
+        }
+    });
+
+    main_window.set_show_header(true);
+    main_window.set_todo_model(todo_model.into());
+
+    main_window.run();
 }
